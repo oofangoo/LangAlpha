@@ -184,11 +184,6 @@ class WorkspaceManager(ComputerManager):
             ) from e
         return session
 
-    async def stop_workspace(self, workspace_id: str) -> Dict[str, Any]:
-        """Stop the machine this project runs on (preserves data)."""
-        binding = await self.resolve_binding(workspace_id)
-        return await self._stop_machine(binding.computer_id, workspace_id=workspace_id)
-
     async def archive_workspace(self, workspace_id: str) -> Dict[str, Any]:
         """Archive a stopped machine (moves its sandbox to object storage)."""
         binding = await self.resolve_binding(workspace_id)
@@ -501,3 +496,18 @@ class WorkspaceManager(ComputerManager):
 
         self._cleanup_task = asyncio.create_task(cleanup_loop())
         logger.info("Workspace cleanup task started")
+
+
+def prune_thread_dirs_soon(workspace_id: str) -> None:
+    """``WorkspaceManager.prune_thread_dirs_soon`` on this process's manager.
+    A process without one leaves the dirs to the workspace's next bring-up."""
+    manager = WorkspaceManager.current()
+    if manager is not None:
+        manager.prune_thread_dirs_soon(workspace_id)
+
+
+def prune_if_archived_soon(thread_id: str) -> None:
+    """``WorkspaceManager.prune_if_archived_soon`` on this process's manager."""
+    manager = WorkspaceManager.current()
+    if manager is not None:
+        manager.prune_if_archived_soon(thread_id)

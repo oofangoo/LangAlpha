@@ -27,6 +27,7 @@ agent.md, data/, <task>/            yours
 .agents/threads/<thread>/           code/ (a copy of every ExecuteCode and Bash script)
 .agents/transcripts/<thread>/       every conversation's transcript, read only
 .agents/large_tool_results/<thread>/  tool results too large for your context
+.agents/scratchpad/<thread>/        a thread's temporary files and checkpoint notes; deleted when the thread is archived
 .file_sync_marker                   never delete: without it the workspace is restored again
 ```
 
@@ -46,13 +47,13 @@ Use Bash for anything outside the workspaces and `/tmp`. Tool output prints your
 
 ## Search
 
-- **Glob**: a pattern with no `/` searches every depth, and results come newest first, at most 1000. Dependency and cache folders (`node_modules`, `.venv`, `venv`, `vendor`, `.git`, `.cache`, `__pycache__` and similar) are skipped at any depth, and so are the two history folders unless the pattern or `path` spells them out. Braces do not expand: `*.{csv,json}` matches nothing, so run one pattern per extension.
+- **Glob**: a pattern with no `/` searches every depth, and results come newest first, at most 1000. Dependency and cache folders (`node_modules`, `.venv`, `venv`, `vendor`, `.git`, `.cache`, `__pycache__` and similar) are skipped at any depth, and so are the history folders under `.agents/` (`threads/`, `transcripts/`, `large_tool_results/`, `scratchpad/`) unless the pattern or `path` spells them out. Braces do not expand: `*.{csv,json}` matches nothing, so run one pattern per extension.
 - **Grep**: skips hidden and git-ignored files and folders unless `path` points inside one. `.agents/memory/` is the exception and is searched by default. Content mode cuts a line over 500 characters to windows around its first matches.
 - Data-server docs and shared skills are links, which Grep and a pattern starting `**/` do not follow. Spell the folder in the pattern, for example Glob `.agents/tools/docs/**/*.md`, or Read the file directly.
 
 ## Memory, memos, profile, workflows and automations live on the server
 
-`.agents/memory/` (this workspace), `.agents/user/memory/` (every workspace), `.agents/user/memo/` (the user's uploaded documents, read only), `.agents/user/profile/` (`portfolio.json`, `watchlist.json`, `preference.json`, checked on write), `.agents/user/automations/` (one JSON file per automation, checked on write) and `.agents/workflows/` are held by the server, not on disk, so they survive every restart and rebuild. The file tools always reach them; Bash and code reach them through the computer's file mount.
+`.agents/memory/` (this workspace), `.agents/user/memory/` (every workspace), `.agents/user/memo/` (the user's uploaded documents, read only), `.agents/user/profile/` (`user.json`, `portfolio.json`, `watchlist.json`, `preference.json`, checked on write), `.agents/user/automations/` (one JSON file per automation, checked on write) and `.agents/workflows/` are held by the server, not on disk, so they survive every restart and rebuild. The file tools always reach them; Bash and code reach them through the computer's file mount.
 
 - With the mount up they are ordinary files at the same paths. A save the server refuses (invalid JSON, a file changed since you read it) does not fail the command: the tool result lists it under NOT SAVED, so check there before relying on the write. In the profile and automations folders, save in place: `sed -i` and write-then-rename helpers write a temporary file first, which the profile folder refuses, as does the automations folder for a name without `.json`, like sed's. A temporary `.json` file there is saved as an automation of its own, and moving it onto the original is refused, so `rm` it.
 - Without the mount, ExecuteCode and Bash refuse a call whose text names a memory, memo or automations path, even in a comment. Read the file first and put what you need into the code.
