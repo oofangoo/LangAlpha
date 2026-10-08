@@ -1,0 +1,26 @@
+# The paper-only Alpaca MCP sidecar (libs/alpaca-mcp). It holds no credentials of
+# its own: each call carries the caller's Alpaca paper keys, so the image has no
+# secrets to leak and needs no volume.
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+COPY libs/alpaca-mcp/ /app/
+RUN pip install .
+
+# Bound to every interface because the container's network is the boundary:
+# compose publishes no port for this service, so only containers on the stack's
+# network can reach it. Run outside a container, the default is loopback.
+ENV ALPACA_MCP_HOST=0.0.0.0 \
+    ALPACA_MCP_PORT=8765
+
+USER nobody
+EXPOSE 8765
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=5s \
+    CMD python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8765/healthz', timeout=2)"
+
+CMD ["alpaca-mcp"]

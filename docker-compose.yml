@@ -90,6 +90,22 @@ services:
       retries: 10
       start_period: 30s
 
+  # Paper-only Alpaca MCP server (libs/alpaca-mcp). Off unless COMPOSE_PROFILES
+  # includes "alpaca". No port is published: the backend reaches it by service
+  # name over the stack's network, and the relay's private-destination allowance
+  # (EGRESS_PRIVATE_ALLOWLIST) must name exactly this address.
+  alpaca-mcp:
+    profiles: ["alpaca"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.alpaca-mcp
+    init: true
+    restart: unless-stopped
+    environment:
+      ALPACA_MCP_ALLOWED_HOSTS: "alpaca-mcp:8765"
+    expose:
+      - "8765"
+
   frontend:
     image: node:22-alpine
     working_dir: /app
