@@ -1,0 +1,198 @@
+# Alpaca paper connector: handoff
+
+Read `alpaca-paper-connector.md` first for the design and the reasons. This file is the state of the work and what to
+do next. Branch: `alpaca-paper` on `oofangoo/langalpha` (a fork of `ginlix-ai/langalpha`). No pull request is open.
+
+## State
+
+| | |
+|---|---|
+| Sidecar `libs/alpaca-mcp` (tools, validation, Dockerfile, compose profile) | built, 41 tests |
+| Private-origin allowance `EGRESS_PRIVATE_ALLOWLIST` (relay, probe, URL validator) | built, 30 tests |
+| `AlpacaOrderAdapter`, capability map, registry entry, migration `063` | built, 73 + 8 tests, migration run on real Postgres |
+| Header-credential **consent** for an operator-hosted brokerage | **not built** (blocker 1) |
+| Credentials entry (keys into the vault, headers on the row) | **not built** (blocker 2) |
+| Order **reconciliation** for a header-credential connection | **not built** (blocker 3) |
+| Frontend (tile, credentials dialog, strings, icon) | **not built** |
+| End to end against the Docker stack and a real Alpaca paper account | **never run** |
+
+With the allowance unset, which is the default, nothing changes anywhere: the connector is not listed and cannot be
+enabled. To exercise what exists, set `EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765` and add `alpaca` to
+`COMPOSE_PROFILES`. After that it still cannot work end to end, for the three blockers below.
+
+## The three blockers (all platform, all in this repo)
+
+Every shipped broker is an OAuth connection, and a lot is keyed on that. A header-credential connector (Alpaca has no
+OAuth) falls through three gaps. In this order:
+
+### 1. Consent
+
+A row authenticated by headers has no consent record, and every reader treats that as consent to **nothing**, which
+denies a curated vendor's entire curation. So today every Alpaca tool would be refused.
+
+Fix: a single helper in `brokerage_capabilities.py`, say `header_consent(vendor) -> tuple[str, ...]`, returning every
+group key of an `operator_hosted` brokerage and `()` for all others (so no existing behaviour moves). Use it where the
+`()` literal is passed for a connection-less row:
+
+- `src/server/database/egress_grants.py`: `_header_policies` (the `_policy(vendor_for_url(row["url"]), (), row)` call
+  near line 144) and the second header path near line 957.
+- `src/server/services/mcp_config.py`: the no-connection branches near lines 530 and 566.
+- `src/server/services/egress/direct_tools.py`: `_identity`, near line 329.
+- `src/server/app/mcp_catalog.py`: near lines 225 and 716.
+
+Keep the existing tests that assert a header row at a shipped OAuth vendor consents to nothing. Add tests that an
+operator-hosted vendor's header row gets its groups. This is safe to grant fixed: the connector is paper-only by
+construction and orders still go through the approval gate (`order_approval` switches on the row).
+
+### 2. Credentials
+
+Shipped brokerage rows are not editable (`app/mcp_servers.py` ~L223 and ~L464), and `_create_brokerage_row` in
+`app/mcp_brokerages.py` builds the row with no headers. There is nowhere for a user to put keys.
+
+Fix:
+- For an `operator_hosted` brokerage, create the row with header refs to vault secrets, e.g.
+  `APCA-API-KEY-ID: ${vault:ALPACA_PAPER_KEY_ID}` and `APCA-API-SECRET-KEY: ${vault:ALPACA_PAPER_SECRET_KEY}`.
+  Check `_validate_header_map` accepts them. `tools/list` on the sidecar needs no credentials, so
+  `discovery_uses_secrets=False` should do.
+- Add `PUT` and `DELETE /api/v1/mcp/brokerages/{name}/credentials`. `PUT` takes the key id and secret, verifies them
+  once with a real read against `https://paper-api.alpaca.markets/v2/account` (reject with a clear 422 on 401/403 so a
+  live key, which Alpaca refuses on the paper host, is caught here), writes both into the user vault (see
+  `app/user_vault.py`, `database/user_vault_secrets.py`), and triggers discovery and a grant re-sync. Never log or
+  return the secret.
+- Rows become eligible for a relay grant when `enabled`, `transport = 'http'` and a URL are set
+  (`egress_grants._upsert_header_grants`). Confirm that the probe verdict (`mcp_config._binding_plan`, `probe_ok`)
+  turns green for the allowlisted URL, since it gates whether the direct tools bind.
+
+### 3. Reconciliation
+
+`orders/reconcile.py::_reconcile_group` calls `get_connection(user_id, server)` and
+`database/order_reconciliation.py::active_grant_for_connection(user_id, connection_id)`. A header grant has no
+connection, so every Alpaca attempt would be skipped and stay open forever.
+
+Fix: when no connection exists, look up an active `header_mcp` grant by `(user_id, server_name)` in
+`sandbox_egress_grants` and derive the vendor from the **grant's `destination_url`** with `brokerage_for_url` (never the
+server name, which is the user's to choose). Check the rest of `order_reconciliation.py` (`list_stale_attempts` and
+friends) for other `connection_id` joins. The relay accepts a header grant (`prepare_relay` skips the connection check
+for it), so the read path itself already works.
+
+## Then the frontend
+
+Backend order and receipt rendering reads the neutral `BrokerOrder` shape, and a grep found no vendor-specific
+branches in `web/src` beyond comments, so approval cards, receipts and the Orders page may need little or nothing.
+Verify that rather than assume it. What is certainly needed:
+
+- A way to enter the paper key pair and see its state (`web/src/pages/Plugins/components/McpCatalogRow.tsx`,
+  `BrokerageConsentDialog.tsx`, `web/src/pages/Plugins/brokerages.ts` for the connection state,
+  `web/src/pages/ChatAgent/utils/api/brokerages.ts`, `hooks/useConnectedBrokerage.ts`).
+  The existing Connect action starts OAuth, which Alpaca does not have. The consent dialog's group toggles should not
+  appear for a fixed-consent connector.
+- Strings in `web/src/locales/en-US.json` and `zh-CN.json`, and an icon (`web/src/lib/brandArt.ts`; the registry's
+  `site` is `alpaca.markets`).
+
+## Then run it for real (nothing here has been)
+
+The repo's own rule is to verify with real calls first and pin with tests last. Do this before writing more tests.
+
+```bash
+cp .env.example .env     # set EGRESS_RELAY_SECRET, COMPOSE_PROFILES=infra,alpaca,
+                         # EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765
+make up
+```
+
+Use an Alpaca **paper** account that is **not** the one `trading-agents-poc` trades; sharing it would corrupt that
+project's 90-day measurement. Then, in order: enable the connector, enter keys, confirm discovery lists the tools,
+place a paper order from chat and watch the approval card, check the ledger row, let a market order fill and watch
+reconciliation move it, place and cancel a limit order, and force an unanswered placement (block the sidecar's egress)
+to see it land as `unknown` and reconcile.
+
+### Alpaca facts that came from documentation or memory, not a live call
+
+Check each against a real paper account; fix `libs/alpaca-mcp` or the adapter where they differ.
+
+- Paths and verbs: `GET /v2/account`, `/v2/positions[/{symbol}]`, `/v2/orders`, `/v2/orders/{id}`,
+  `/v2/orders:by_client_order_id`, `POST/PATCH/DELETE` on orders, `DELETE /v2/positions/{symbol}` with `qty` or
+  `percentage`, `/v2/clock`, `/v2/calendar`, and the data paths under `https://data.alpaca.markets` (`/v2/stocks/{sym}/bars`,
+  `/quotes/latest`, `/snapshot`). A crypto symbol in a position path is sent percent-encoded (`BTC%2FUSD`); Alpaca's docs
+  also use `BTCUSD`.
+- A cancel answers 204 and the sidecar turns that into `{}`.
+- The error body is `{"code": int, "message": str}`; some errors may carry only `message`.
+- **Listing paging.** The adapter continues with `until=<created_at of the oldest row>`. If `until` is inclusive the
+  boundary order is listed twice and reconciliation will see two identical candidates and call it ambiguous. If so,
+  dedupe by id or step the cursor by a microsecond.
+- `limit` maximum 500 on `/v2/orders`; timestamps may carry nanoseconds (the adapter's `as_datetime` handles that on
+  Python 3.11+, and a test covers it).
+- Notional orders must be market and `day`; `extended_hours` only on a `day` limit. The validator enforces both, so a
+  wrong belief here makes it reject a valid order.
+- The free data plan serves IEX only; the sidecar defaults `feed=iex`.
+
+## Open decisions
+
+- **Who owns `client_order_id`.** The sidecar mints it, so the host never holds one for a placement whose answer was
+  lost and relies on the fingerprint instead (like IBKR). Having the host choose it before approval would make
+  recovery exact, but the relay hashes the arguments at approval, so it means changing the proposal step in
+  `order_governance` / `order_ledger`. Not done; worth deciding after the first real run shows how often it matters.
+- **`account_ref`** is empty because the adapter cannot see an account id in any answer. Fine for one paper account per
+  user; revisit if a user connects two.
+- **Offering this upstream.** The sidecar and allowance are generic enough that `ginlix-ai/langalpha` may want them,
+  but the allowance is security-sensitive and should be argued for on its own.
+
+## How to run what exists
+
+```bash
+uv sync --frozen
+uv run pytest tests/unit -q --ignore=tests/unit/plugins/skills          # openpyxl is not installed here
+uv run pytest tests/unit/server/services/brokerage_orders tests/unit/server/utils -q
+cd libs/alpaca-mcp && PYTHONPATH=. uv run --with pytest --with pytest-asyncio pytest -c pyproject.toml --rootdir . tests -q
+```
+
+`tests/unit/ptc_agent/core/sandbox/test_livefs_daemon.py::test_root_lays_the_links_as_the_folders_owner` fails when the
+suite runs as root (it did in the authoring container) and also fails on the untouched base. It is not this work.
+
+To test a migration for real without Docker: Postgres 16 server binaries were present, but the server refuses to run as
+root, so run it as another user, and initialise it with `-E UTF8 --locale=C.UTF-8` (the default SQL_ASCII encoding makes
+psycopg return bytes and breaks alembic). Then `alembic upgrade head` with `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD`
+and `DB_SSLMODE=disable`.
+
+## Conventions that bit
+
+- `asyncio_mode = "strict"`: every async test needs `@pytest.mark.asyncio`.
+- Tests that stub `pin_public_url` must accept `**kwargs` now (it takes `allow_operator_private`).
+- `set(_CURATION) == brokerage_names()` is enforced, so a curated vendor must be in `BROKERAGES`. That is why the
+  entry is always present but hidden unless the operator allows its address.
+- `AGENTS.md`: docstrings explain why, not what; do not reword the pinned agent-facing docstrings; third-party MCP
+  servers launch isolated; the backend is multi-worker (no module-level state a request path consults).
+
+---
+
+## Prompt for the next session
+
+Paste this into a new session on `oofangoo/langalpha` (it needs push access to that repo, on branch `alpaca-paper`).
+
+```text
+You are continuing work on the Alpaca paper-trading connector in oofangoo/langalpha (a fork of ginlix-ai/langalpha).
+Work on branch `alpaca-paper`; fetch it first. Do not open a pull request unless I ask.
+
+Start by reading, in this order: AGENTS.md, docs/design/alpaca-paper-connector.md, docs/design/alpaca-paper-handoff.md.
+They state the goal, what is built and verified, what is not, and why. Do not re-litigate the design: the sidecar
+approach and the narrow EGRESS_PRIVATE_ALLOWLIST are settled. Do not widen that allowance (no paths, wildcards, CIDRs,
+no use from OAuth hops). The connector is paper-only and must stay unable to reach a live Alpaca account.
+
+The backend half is built. The connector cannot yet work end to end because of three platform gaps, listed with file
+pointers in the handoff under "The three blockers". Do them in that order:
+  1. fixed consent for an operator-hosted brokerage's header-credential row (a single `header_consent` helper, default
+     empty so no other vendor changes);
+  2. credentials entry (row created with vault-ref headers; PUT/DELETE /api/v1/mcp/brokerages/{name}/credentials that
+     verifies the key pair against the paper account, writes the vault secrets, never logs or returns the secret);
+  3. order reconciliation for a header grant (find the grant by user + server name + kind, derive the vendor from the
+     grant's destination_url, never from the server name).
+Then the frontend, then a real run (see "Then run it for real"). If this session has no Docker daemon, finish 1-3 with
+unit tests and say plainly that the end-to-end run is still owed.
+
+Rules: follow AGENTS.md (verify with real calls first, pin with tests last; docstrings explain why). Use a separate
+Alpaca paper account from the one the trading-agents-poc project trades. Run the unit suite and the sidecar tests before
+every push, and report any failure with its output; the root-uid livefs test failure is known and unrelated. Commit in
+small logical commits and push to `alpaca-paper` only. When you finish a blocker, update the State table in the handoff.
+
+Tell me at the end: what you built, what you ran, what you could not verify, and which of the handoff's "Alpaca facts"
+you checked against a real account.
+```
