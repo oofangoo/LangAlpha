@@ -17,6 +17,7 @@ them is translated, so the wire carries the fact and the client owns the words.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -55,11 +56,24 @@ class Brokerage:
     # mark too small to draw sharply. Asked before the site, which stays the
     # fallback if the file ever moves.
     icon: str | None = None
+    # The endpoint is a service the operator runs beside this one rather than the
+    # vendor's own, because the vendor publishes no remote MCP server. It is only
+    # offered while the operator has allowed its address (see
+    # ``egress_guard.operator_private_destinations``), since without that nothing
+    # here could reach it.
+    operator_hosted: bool = False
 
     @property
     def mark_sources(self) -> tuple[str, ...]:
         """Where the broker's mark is looked for, best first."""
         return (self.icon, self.site) if self.icon else (self.site,)
+
+
+# Where the Alpaca sidecar (libs/alpaca-mcp) answers. The service name is the one
+# docker-compose.yml gives it; an operator running it elsewhere sets this and
+# allows the same origin in EGRESS_PRIVATE_ALLOWLIST. Read once, here, because a
+# brokerage's address is named in source or by the operator and never by a user.
+ALPACA_MCP_URL = os.getenv("ALPACA_MCP_URL") or "http://alpaca-mcp:8765/mcp"
 
 
 BROKERAGES: tuple[Brokerage, ...] = (
@@ -115,6 +129,18 @@ BROKERAGES: tuple[Brokerage, ...] = (
             "screeners, and order placement. Covers US, Greater China, Japan "
             "and Southeast Asia."
         ),
+    ),
+    Brokerage(
+        name="alpaca",
+        label="Alpaca (paper)",
+        url=ALPACA_MCP_URL,
+        site="alpaca.markets",
+        description=(
+            "Alpaca paper trading account: balances, positions, order history, "
+            "US stock quotes and bars, and order placement. Simulated money "
+            "only; there is no live account behind this connector."
+        ),
+        operator_hosted=True,
     ),
 )
 

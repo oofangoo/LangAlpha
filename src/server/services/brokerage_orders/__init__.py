@@ -18,6 +18,7 @@ from src.server.services.brokerage_orders.base import (
     body_parts,
     pre_vendor_outcome,
 )
+from src.server.services.brokerage_orders.alpaca import AlpacaOrderAdapter
 from src.server.services.brokerage_orders.ibkr import IbkrOrderAdapter
 from src.server.services.brokerage_orders.models import (
     OPEN_STATUSES,
@@ -50,6 +51,7 @@ __all__ = [
     "OPEN_STATUSES",
     "REFUSAL_PREFIX",
     "TERMINAL_STATUSES",
+    "AlpacaOrderAdapter",
     "AssetClass",
     "AttemptStatus",
     "BrokerOrder",

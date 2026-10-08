@@ -233,6 +233,7 @@ def adapter_for(vendor: str) -> OrderAdapter | None:
     """The adapter for a vendor key, or None where orders are not modeled yet."""
     # Imported here rather than at module scope: the vendor modules import this
     # one for the contract, so the registry has to resolve after they load.
+    from src.server.services.brokerage_orders.alpaca import AlpacaOrderAdapter
     from src.server.services.brokerage_orders.ibkr import IbkrOrderAdapter
     from src.server.services.brokerage_orders.moomoo import MoomooOrderAdapter
     from src.server.services.brokerage_orders.robinhood import RobinhoodOrderAdapter
@@ -244,6 +245,8 @@ def adapter_for(vendor: str) -> OrderAdapter | None:
             return RobinhoodOrderAdapter()
         case "ibkr":
             return IbkrOrderAdapter()
+        case "alpaca":
+            return AlpacaOrderAdapter()
         case _:
             return None
 

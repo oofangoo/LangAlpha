@@ -2000,11 +2000,44 @@ async def test_every_shipped_brokerage_survives_the_user_url_policy():
     from src.server.models.mcp_server import McpServerInput
     from src.server.services.brokerages import BROKERAGES
 
+    # An operator-hosted connector is private by design and passes only once the
+    # operator has allowed its address; the next test holds that half.
     for b in BROKERAGES:
+        if b.operator_hosted:
+            continue
         server = McpServerInput(
             name=b.name, transport="http", url=b.url, description=b.description
         )
         assert server.url == b.url
+
+
+@pytest.mark.asyncio
+async def test_an_operator_hosted_brokerage_needs_the_operator_to_allow_it(
+    monkeypatch,
+):
+    """Off by default, and on only for the exact address the operator named."""
+    from src.server.app.mcp_brokerages import list_brokerages
+    from src.server.models.mcp_server import McpServerInput
+    from src.server.services.brokerages import BROKERAGES, brokerage_by_name
+    from src.server.utils.egress_guard import OPERATOR_PRIVATE_ENV
+
+    hosted = [b for b in BROKERAGES if b.operator_hosted]
+    assert hosted, "expected at least one operator-hosted brokerage"
+
+    monkeypatch.delenv(OPERATOR_PRIVATE_ENV, raising=False)
+    offered = {b.name for b in (await list_brokerages("u")).brokerages}
+    for b in hosted:
+        assert b.name not in offered
+        with pytest.raises(ValueError):
+            McpServerInput(name=b.name, transport="http", url=b.url)
+
+    for b in hosted:
+        origin = b.url.split("/", 3)
+        monkeypatch.setenv(OPERATOR_PRIVATE_ENV, "/".join(origin[:3]))
+        offered = {x.name for x in (await list_brokerages("u")).brokerages}
+        assert b.name in offered
+        assert McpServerInput(name=b.name, transport="http", url=b.url).url == b.url
+        assert brokerage_by_name(b.name) is b
 
 
 class TestBuiltinToolsSeparateEmptyFromUnknown:

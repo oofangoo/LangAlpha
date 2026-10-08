@@ -418,6 +418,35 @@ _CURATION: dict[str, dict[str, tuple[str, ...]]] = {
             "get_order_instructions",
         ),
     },
+    # Alpaca is paper-only by construction (the sidecar has no setting that
+    # selects a live host), so there is no real account for an ``account`` group
+    # to guard and no ``trading`` rung: the order tools sit in ``paper_trading``
+    # beside the reads that settle them, as moomoo's simulated account does. The
+    # reads are in the group because reconciliation can only read what the
+    # connection permits, and an order whose status read is declined is an order
+    # nothing can settle.
+    "alpaca": {
+        "market_data": (
+            "get_calendar",
+            "get_clock",
+            "get_stock_bars",
+            "get_stock_latest_quote",
+            "get_stock_snapshot",
+        ),
+        "paper_trading": (
+            "cancel_order_by_id",
+            "close_position",
+            "get_account_info",
+            "get_all_positions",
+            "get_open_position",
+            "get_order_by_client_id",
+            "get_order_by_id",
+            "get_orders",
+            "place_crypto_order",
+            "place_stock_order",
+            "replace_order_by_id",
+        ),
+    },
     # No rung of any kind here, and the line is the vendor's rather than ours.
     # Webull's consent screen offers exactly four capabilities -- account infos,
     # order query, market data, security infos -- and no trading checkbox, so the
@@ -609,6 +638,15 @@ _ORDER_TOOLS: dict[str, dict[str, OrderTool]] = {
         "cancel_option_exercise": OrderTool(
             OrderAction.CANCEL_EXERCISE, OrderMode.LIVE, "option"
         ),
+    },
+    "alpaca": {
+        "place_stock_order": OrderTool(OrderAction.PLACE, OrderMode.PAPER, "equity"),
+        "place_crypto_order": OrderTool(OrderAction.PLACE, OrderMode.PAPER, "crypto"),
+        # Closing a position is an order the account places, with the position's
+        # side and size, so the call itself names neither.
+        "close_position": OrderTool(OrderAction.PLACE, OrderMode.PAPER),
+        "replace_order_by_id": OrderTool(OrderAction.REPLACE, OrderMode.PAPER),
+        "cancel_order_by_id": OrderTool(OrderAction.CANCEL, OrderMode.PAPER),
     },
     "ibkr": {
         # IBKR calls an instruction "not a live order", and it is not: it is an

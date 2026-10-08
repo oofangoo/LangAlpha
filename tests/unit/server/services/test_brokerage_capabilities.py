@@ -32,7 +32,7 @@ from src.server.services.brokerage_capabilities import (
     required_groups,
     tools_for,
 )
-from src.server.services.brokerage_orders import ibkr, moomoo, robinhood
+from src.server.services.brokerage_orders import alpaca, ibkr, moomoo, robinhood
 from src.server.services.brokerages import brokerage_names
 
 VENDORS = sorted(_CURATION)
@@ -354,6 +354,8 @@ def _status_read(vendor: str, entry: OrderTool) -> str:
         return robinhood._STATUS_TOOLS[entry.asset_class][0]
     if vendor == "ibkr":
         return ibkr.LIST_INSTRUCTIONS
+    if vendor == "alpaca":
+        return alpaca.LIST_ORDERS
     raise AssertionError(f"name the read {vendor}'s adapter settles an order with")
 
 

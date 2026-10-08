@@ -43,6 +43,7 @@ from src.server.services.brokerages import (
 )
 from src.server.services.mcp_config import builtin_names
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
+from src.server.utils.egress_guard import is_operator_private_destination
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,21 @@ async def list_brokerages(user_id: CurrentUserId) -> BrokerageList:
     page, which is holding a token already, so there is nothing an exception
     here would buy.
     """
-    return BrokerageList(brokerages=[brokerage_to_response(b) for b in BROKERAGES])
+    return BrokerageList(
+        brokerages=[brokerage_to_response(b) for b in BROKERAGES if _offered(b)]
+    )
+
+
+def _offered(brokerage: Brokerage) -> bool:
+    """Whether this deployment can reach the connector at all.
+
+    A vendor-hosted connector is always offered. One the operator hosts is
+    offered only once its address is on the operator's allowance, because until
+    then every step past the switch would fail on an address nothing may dial.
+    """
+    return not brokerage.operator_hosted or is_operator_private_destination(
+        brokerage.url
+    )
 
 
 async def _create_brokerage_row(user_id: str, brokerage: Brokerage) -> None:
@@ -113,7 +128,7 @@ async def set_brokerage_enabled(
     deliberate edit at the moment they were only reaching for the switch.
     """
     brokerage = brokerage_by_name(name)
-    if brokerage is None:
+    if brokerage is None or not _offered(brokerage):
         raise HTTPException(status_code=404, detail="Unknown brokerage")
 
     existing = await get_catalog_server(user_id, name)
