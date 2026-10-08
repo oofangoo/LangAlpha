@@ -625,6 +625,36 @@ async def cancelled_by_own_attempt(
             return row_as_json(await cur.fetchone())
 
 
+async def active_header_grant(user_id: str, server_name: str) -> dict[str, str] | None:
+    """An active egress grant on a header-authenticated server, for the same reason.
+
+    A server that authenticates by header has no connection to hang a grant on, so
+    the grant is found by the catalog row it was issued for. The destination comes
+    back with it because that, and never the server's name, is what says which
+    vendor's rules apply: the name is the user's to choose.
+    """
+    async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT g.grant_id, g.workspace_id, g.destination_url
+              FROM sandbox_egress_grants g
+             WHERE g.user_id = %s AND g.server_name = %s
+               AND g.kind = 'header_mcp' AND g.status = 'active'
+             ORDER BY g.updated_at DESC
+             LIMIT 1
+            """,
+            (user_id, server_name),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "grant_id": str(row["grant_id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "destination_url": str(row["destination_url"]),
+    }
+
+
 async def active_grant_for_connection(
     user_id: str, connection_id: str
 ) -> dict[str, str] | None:

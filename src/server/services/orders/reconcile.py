@@ -37,10 +37,11 @@ from typing import Any
 
 from src.config.env import EGRESS_RELAY_SECRET
 from src.config.settings import get_order_reconcile_config
-from src.server.database.mcp_oauth import SERVABLE, get_connection
+from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
 from src.server.database.order_reconciliation import (
     Observation,
     active_grant_for_connection,
+    active_header_grant,
     cancelled_by_own_attempt,
     claimed_vendor_order_ids,
     fail_undispatched_attempts,
@@ -468,27 +469,16 @@ class OrderReconciler:
         report: PassReport,
     ) -> None:
         """Settle one user's attempts at one connected server."""
-        connection = await get_connection(user_id, server)
-        if connection is None or connection.status not in SERVABLE:
+        vendor, grant = await self._reach(user_id, server)
+        if grant is None:
             logger.debug(
                 "[OrderReconcile] %s/%s not reachable; %d attempt(s) left open",
                 user_id, server, len(rows),
             )
             report.skipped += len(rows)
             return
-        vendor = vendor_for_url(connection.server_url)
         adapter = adapter_for(vendor or "")
         if adapter is None:
-            report.skipped += len(rows)
-            return
-        grant = await active_grant_for_connection(
-            user_id, str(connection.connection_id)
-        )
-        if grant is None:
-            logger.debug(
-                "[OrderReconcile] %s/%s has no active grant; %d attempt(s) left open",
-                user_id, server, len(rows),
-            )
             report.skipped += len(rows)
             return
 
@@ -523,6 +513,32 @@ class OrderReconciler:
                 row, orders[row["attempt_id"]], listing, claims[account],
                 unanswered[account], adapter, config, report,
             )
+
+    @staticmethod
+    async def _reach(
+        user_id: str, server: str
+    ) -> tuple[str | None, dict[str, str] | None]:
+        """The vendor and the grant to read a server's orders through, if any.
+
+        An OAuth connection that has not been revoked claims the server whatever
+        its state, so an expired one is not read around by falling back to a
+        header grant, which is the rule the relay applies to the same row. With no
+        such connection, a header-authenticated server is read through its own
+        grant. Either way the vendor comes from the address the credential was
+        issued for and never from the server's name.
+        """
+        connection = await get_connection(user_id, server)
+        if connection is not None and connection.status is not ConnectionStatus.REVOKED:
+            if connection.status not in SERVABLE:
+                return None, None
+            grant = await active_grant_for_connection(
+                user_id, str(connection.connection_id)
+            )
+            return vendor_for_url(connection.server_url), grant
+        grant = await active_header_grant(user_id, server)
+        if grant is None:
+            return None, None
+        return vendor_for_url(grant["destination_url"]), grant
 
     def _plan(
         self,

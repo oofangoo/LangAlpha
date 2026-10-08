@@ -1261,3 +1261,104 @@ async def test_a_cancel_in_another_account_does_not_settle_this_order():
 
     assert report.moved == 0
     assert ledger.rows["a1"]["status"] == "submitted"
+
+
+# ------------------------------------------- a server that authenticates by header
+
+HEADER_GRANT = {
+    "grant_id": "g-header",
+    "workspace_id": "ws1",
+    "destination_url": "http://alpaca-mcp:8765/mcp",
+}
+
+
+async def _run_without_a_connection(
+    ledger, adapter, client, *, connection=None, grant=HEADER_GRANT, vendors=None
+):
+    """The usual harness, with the connection and header grant lookups replaced."""
+    seen = vendors if vendors is not None else []
+
+    def _vendor(url):
+        seen.append(url)
+        return "moomoo"
+
+    reached = {"header": 0}
+
+    async def _header_grant(*_args, **_kwargs):
+        reached["header"] += 1
+        return grant
+
+    reconciler = OrderReconciler(config=_config())
+    patches = _patches(ledger, adapter, client) + [
+        patch(f"{_MOD}.get_connection", _async(connection)),
+        patch(f"{_MOD}.active_header_grant", _header_grant),
+        patch(f"{_MOD}.vendor_for_url", _vendor),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        return await reconciler.run_once(), reached
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_header_authenticated_server_is_read_through_its_own_grant():
+    ledger = FakeLedger([_row("a1", AttemptStatus.WORKING, "V1")])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.FILLED)])
+    seen: list[str] = []
+    report, reached = await _run_without_a_connection(
+        ledger, adapter, FakeClient(), vendors=seen
+    )
+    assert report.moved == 1
+    assert ledger.rows["a1"]["status"] == "filled"
+    # The vendor is read off the address the grant was issued for, never the
+    # server's name, which is the user's to choose.
+    assert seen == [HEADER_GRANT["destination_url"]]
+
+
+@pytest.mark.asyncio
+async def test_no_header_grant_leaves_the_attempt_open():
+    ledger = FakeLedger([_row("a1", AttemptStatus.WORKING, "V1")])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.FILLED)])
+    report, _ = await _run_without_a_connection(
+        ledger, adapter, FakeClient(), grant=None
+    )
+    assert report.moved == 0
+    assert ledger.rows["a1"]["status"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_a_connection_that_is_not_revoked_claims_the_server():
+    # An expired token is not read around by borrowing a header grant: the relay
+    # applies the same rule to the same row.
+    ledger = FakeLedger([_row("a1", AttemptStatus.WORKING, "V1")])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.FILLED)])
+    connection = SimpleNamespace(
+        status="needs_reauth", server_url="https://mcp.moomoo.com/mcp", connection_id="c"
+    )
+    report, reached = await _run_without_a_connection(
+        ledger, adapter, FakeClient(), connection=connection
+    )
+    assert report.moved == 0
+    assert reached["header"] == 0
+    assert ledger.rows["a1"]["status"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_connection_does_not_block_the_header_grant():
+    from src.server.database.mcp_oauth import ConnectionStatus
+
+    ledger = FakeLedger([_row("a1", AttemptStatus.WORKING, "V1")])
+    adapter = StubAdapter([_listed("V1", AttemptStatus.FILLED)])
+    connection = SimpleNamespace(
+        status=ConnectionStatus.REVOKED,
+        server_url="https://mcp.moomoo.com/mcp",
+        connection_id="c",
+    )
+    report, reached = await _run_without_a_connection(
+        ledger, adapter, FakeClient(), connection=connection
+    )
+    assert report.moved == 1
+    assert reached["header"] == 1
