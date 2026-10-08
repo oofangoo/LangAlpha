@@ -43,6 +43,7 @@ from src.server.services.tool_binding import (
 from src.server.services.brokerage_capabilities import (
     denied_tools,
     group_keys_for,
+    header_consent,
     vendor_for_url,
 )
 
@@ -527,7 +528,8 @@ async def resolve_mcp_config(
         """
         connection = connection_by_server.get(cfg.name)
         if connection is None:
-            return denied_tools(vendor_for_url(cfg.url), ())
+            vendor = vendor_for_url(cfg.url)
+            return denied_tools(vendor, header_consent(vendor))
         vendor = vendor_for_url(connection.get("server_url"))
         capabilities = connection.get("granted_capabilities")
         if capabilities is None and group_keys_for(vendor):
@@ -564,12 +566,13 @@ async def resolve_mcp_config(
         # consent screen is denied a curated vendor's whole curation, while
         # its uncurated tools still take the path the row asked for.
         vendor = vendor_for_url(cfg.url)
-        plan = resolve_plan(vendor, (), inputs)
+        consent = header_consent(vendor)
+        plan = resolve_plan(vendor, consent, inputs)
         snapshot = snapshots.snapshot(cfg) if snapshots is not None else None
         if not inputs.relayable or probe_ok(snapshot):
             return plan, False
         return (
-            resolve_plan(vendor, (), replace(inputs, relayable=False)),
+            resolve_plan(vendor, consent, replace(inputs, relayable=False)),
             bool(plan.direct) and snapshot_probe(snapshot) is None,
         )
 

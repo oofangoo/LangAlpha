@@ -676,6 +676,27 @@ def group_keys_for(brokerage: str | None) -> tuple[str, ...]:
     return tuple(g.key for g in groups_for(brokerage))
 
 
+def header_consent(brokerage: str | None) -> tuple[str, ...]:
+    """What a connection-less row consents to at this vendor.
+
+    Capability consent is recorded on an OAuth connection, and a row that
+    authenticates by header has none, which every reader takes as consent to
+    nothing. That is right for a vendor's own endpoint reached with a pasted key,
+    and wrong for a connector the operator deploys beside this server: there is
+    no consent screen to reach, and what it can do is fixed by what the operator
+    built. So an ``operator_hosted`` brokerage is granted every group it offers,
+    and every other vendor keeps the empty answer it always had.
+
+    Granting the order tools here does not skip the gate. Placing an order still
+    goes through the per-order approval and the ledger, which the row's
+    ``order_approval`` switches decide.
+    """
+    brokerage_def = brokerage_by_name(brokerage) if brokerage else None
+    if brokerage_def is None or not brokerage_def.operator_hosted:
+        return ()
+    return group_keys_for(brokerage)
+
+
 def required_groups(brokerage: str | None, key: str) -> tuple[str, ...]:
     """The groups this brokerage must also grant for ``key`` to be in force.
 

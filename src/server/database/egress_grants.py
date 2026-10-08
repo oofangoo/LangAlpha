@@ -124,7 +124,10 @@ async def _header_policies(
     the direct set, so a tool the user put on the JSON path is still refused to
     a sandbox caller at the relay.
     """
-    from src.server.services.brokerage_capabilities import vendor_for_url
+    from src.server.services.brokerage_capabilities import (
+        header_consent,
+        vendor_for_url,
+    )
 
     await cur.execute(
         """
@@ -140,8 +143,9 @@ async def _header_policies(
         # Granting ``()`` is the deliberate half of that: a row that never went
         # through a consent screen is denied a curated vendor's whole curation,
         # while its uncurated tools flow.
+        vendor = vendor_for_url(row["url"])
         denylist, allowlist, required, direct_only = _policy(
-            vendor_for_url(row["url"]), (), row
+            vendor, header_consent(vendor), row
         )
         policies.keys.append(row["name"])
         policies.denylists.append(denylist)
@@ -933,7 +937,10 @@ async def apply_binding_to_active_header_grants(
     workspace count. ``conn`` joins the caller's transaction,
     which is what lands the binding map and the policy enforcing it together.
     """
-    from src.server.services.brokerage_capabilities import vendor_for_url
+    from src.server.services.brokerage_capabilities import (
+        header_consent,
+        vendor_for_url,
+    )
 
     async with get_db_connection(conn) as db, db.transaction():
         async with db.cursor(row_factory=dict_row) as cur:
@@ -953,8 +960,9 @@ async def apply_binding_to_active_header_grants(
             # Granting ``()`` for the reason ``_header_policies`` gives: a row
             # that never went through a consent screen is denied a curated
             # vendor's whole curation.
+            vendor = vendor_for_url(row["url"])
             denylist, allowlist, required, direct_only = _policy(
-                vendor_for_url(row["url"]), (), row
+                vendor, header_consent(vendor), row
             )
             await cur.execute(
                 """

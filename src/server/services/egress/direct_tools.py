@@ -37,6 +37,7 @@ from src.config.env import EGRESS_RELAY_LOOPBACK_URL, EGRESS_RELAY_SECRET
 from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
 from src.server.services.brokerage_capabilities import (
     denied_tools,
+    header_consent,
     order_tool,
     vendor_for_url,
 )
@@ -326,7 +327,8 @@ class DirectMCPBinding:
                 vendor_for_url(connection.server_url),
                 connection.granted_capabilities or (),
             )
-        return vendor_for_url(row.get("url")), ()
+        vendor = vendor_for_url(row.get("url"))
+        return vendor, header_consent(vendor)
 
     def _now_needs_approval(
         self, tool: str, vendor: str | None, row: Mapping[str, Any] | None

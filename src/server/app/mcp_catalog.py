@@ -203,7 +203,10 @@ def _has_direct_tools(row: dict, conn: dict | None, snapshot: dict | None) -> bo
     whose scope toggle saves cleanly and then gives Flash nothing to call.
     """
     from src.server.models.mcp_server import probe_ok
-    from src.server.services.brokerage_capabilities import vendor_for_url
+    from src.server.services.brokerage_capabilities import (
+        header_consent,
+        vendor_for_url,
+    )
     from src.server.services.egress import fold_tool_name, folded
     from src.server.services.tool_binding import inputs_from_row, resolve_plan
 
@@ -221,9 +224,12 @@ def _has_direct_tools(row: dict, conn: dict | None, snapshot: dict | None) -> bo
     published = (snapshot or {}).get("tools") or []
     names = [name for t in published if (name := t.get("name"))]
     vendor_url = conn.get("server_url") if conn is not None else row.get("url")
+    vendor = vendor_for_url(vendor_url)
     plan = resolve_plan(
-        vendor_for_url(vendor_url),
-        (conn.get("granted_capabilities") or ()) if conn is not None else (),
+        vendor,
+        (conn.get("granted_capabilities") or ())
+        if conn is not None
+        else header_consent(vendor),
         inputs_from_row(row),
         candidates=names,
     )
@@ -695,7 +701,10 @@ async def _relay_execution_warning(user_id: str, name: str) -> str | None:
     """
     from src.config.env import EGRESS_RELAY_SECRET
     from src.server.app import setup
-    from src.server.services.brokerage_capabilities import vendor_for_url
+    from src.server.services.brokerage_capabilities import (
+        header_consent,
+        vendor_for_url,
+    )
     from src.server.services.egress.reachability import (
         effective_relay_base_url,
         relay_reachability_warning,
@@ -711,9 +720,10 @@ async def _relay_execution_warning(user_id: str, name: str) -> str | None:
         row = await get_catalog_server(user_id, name)
         if row is None or row.get("transport") != "http":
             return None
-        # Planned off the row's own address and consent to nothing, the way
-        # every other reader plans a row that has no connection.
-        plan = resolve_plan(vendor_for_url(row.get("url")), (), inputs_from_row(row))
+        # Planned off the row's own address and whatever a connection-less row
+        # consents to (nothing, unless the operator deployed the connector).
+        vendor = vendor_for_url(row.get("url"))
+        plan = resolve_plan(vendor, header_consent(vendor), inputs_from_row(row))
         if not plan.direct:
             return None
     if not EGRESS_RELAY_SECRET:
