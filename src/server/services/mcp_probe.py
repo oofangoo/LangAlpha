@@ -318,7 +318,12 @@ async def _preflight(
     send = {**_PREFLIGHT_HEADERS, **headers}
     async with oauth_http_client() as client:
         response = await pinned_request(
-            client, "POST", url, headers=send, content=_PREFLIGHT_BODY
+            client,
+            "POST",
+            url,
+            headers=send,
+            content=_PREFLIGHT_BODY,
+            allow_operator_private=True,
         )
         # A stateful server opened a session for that initialize, and the SDK
         # handshake that follows opens its own; left alone, every probe would
@@ -327,7 +332,11 @@ async def _preflight(
         if session and _SESSION_ID_RE.match(session):
             try:
                 await pinned_request(
-                    client, "DELETE", url, headers={**send, "mcp-session-id": session}
+                    client,
+                    "DELETE",
+                    url,
+                    headers={**send, "mcp-session-id": session},
+                    allow_operator_private=True,
                 )
             except Exception as e:  # noqa: BLE001, best effort by definition
                 logger.debug(
@@ -453,7 +462,7 @@ async def _probe(
             # rebinding TOCTOU open; the pin has to travel with the requests,
             # which is what the transport inside pinned_discovery_client does.
             try:
-                target = await pin_public_url(url)
+                target = await pin_public_url(url, allow_operator_private=True)
             except EgressBlockedError as e:
                 return ProbeOutcome(
                     ok=False, auth="unknown",

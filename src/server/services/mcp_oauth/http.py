@@ -68,10 +68,17 @@ async def pinned_request(
     headers: dict[str, str] | None = None,
     data: dict[str, str] | None = None,
     content: bytes | None = None,
+    allow_operator_private: bool = False,
 ) -> httpx2.Response:
-    """Send one SSRF-pinned request; refuse redirects and unbounded bodies."""
+    """Send one SSRF-pinned request; refuse redirects and unbounded bodies.
+
+    ``allow_operator_private`` is for a probe of the server row's own address and
+    nothing else: every other hop here follows a URL some remote party supplied.
+    """
     try:
-        target = await pin_public_url(url, require_https=True)
+        target = await pin_public_url(
+            url, require_https=True, allow_operator_private=allow_operator_private
+        )
     except EgressBlockedError as e:
         # Provably nothing on the wire. The guard raises this for a permanent
         # policy rejection and for a transient resolution failure alike, so a

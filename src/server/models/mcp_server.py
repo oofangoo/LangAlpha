@@ -34,6 +34,7 @@ from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.services.brokerages import Brokerage
 from src.server.services.mcp_config import Origin
 from src.server.services.tool_binding import inputs_from_row
+from src.server.utils.egress_guard import is_operator_private_destination
 from src.server.services.trading_permission import (
     DEFAULT_TRADING_PERMISSION,
     TradingPermission,
@@ -272,6 +273,13 @@ def validate_remote_url(url: str) -> str:
         raise ValueError("url must not contain secrets or placeholders; put credentials in headers")
 
     parts = urlsplit(url)
+    # An origin the operator named in EGRESS_PRIVATE_ALLOWLIST is the one address
+    # that may be private or plain http: it is a service they deployed beside this
+    # one, and the relay re-checks the same listing at dial time.
+    if is_operator_private_destination(url) and not (
+        parts.username or parts.password or "@" in (parts.netloc or "")
+    ):
+        return url
     if parts.scheme != "https":
         raise ValueError("url must use https://")
     if parts.username or parts.password or "@" in (parts.netloc or ""):

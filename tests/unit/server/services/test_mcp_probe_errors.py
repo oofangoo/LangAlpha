@@ -35,7 +35,7 @@ def _probe_raises(monkeypatch, error: BaseException) -> None:
     """Fail one probe at the preflight, so nothing is dialled and the error the
     probe comes home with is exactly the one given."""
 
-    async def _pin(url):
+    async def _pin(url, **kwargs):
         return url
 
     async def _preflight(url, headers):
@@ -139,7 +139,7 @@ async def test_probe_scrubs_an_echoed_credential_before_logging_it(
     the way out, so it has to scrub for itself."""
     secret = "EXAMPLE-OPAQUE-TOKEN-AAA"
 
-    async def _pin(url):
+    async def _pin(url, **kwargs):
         return url
 
     async def _preflight(url, headers):

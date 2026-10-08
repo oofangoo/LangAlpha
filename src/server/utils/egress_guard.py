@@ -13,7 +13,10 @@ connect.
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
+import logging
+import os
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -25,6 +28,8 @@ __all__ = [
     "PinnedTarget",
     "RESERVED_HEADERS",
     "RESERVED_REQUEST_HEADERS",
+    "is_operator_private_destination",
+    "operator_private_destinations",
     "pin_public_url",
     "resolve_public_ips",
     "strip_configured_headers",
@@ -173,17 +178,142 @@ async def resolve_public_ips(
     return ips
 
 
+logger = logging.getLogger(__name__)
+
+#: Comma-separated ``scheme://host:port`` entries, set by the operator.
+OPERATOR_PRIVATE_ENV = "EGRESS_PRIVATE_ALLOWLIST"
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_private_allowlist(raw: str) -> frozenset[tuple[str, str, int]]:
+    """``(scheme, host, port)`` for each well-formed entry; the rest are dropped.
+
+    An entry has to be exactly an origin: a scheme, a host and an explicit port,
+    nothing else. A path, a credential, a wildcard or a CIDR would each widen
+    what one line of configuration means, so they are refused rather than
+    interpreted, and refused loudly because the operator meant something by them.
+    """
+    allowed: set[tuple[str, str, int]] = set()
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            parts = urlsplit(entry)
+            port = parts.port
+        except ValueError:
+            port = None
+            parts = None
+        host = parts.hostname if parts else None
+        if (
+            parts is None
+            or parts.scheme not in ("http", "https")
+            or not host
+            or port is None
+            or parts.username
+            or parts.password
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+            or "*" in host
+        ):
+            logger.warning(
+                "[egress_guard] ignoring %s entry %r: it must be exactly "
+                "scheme://host:port",
+                OPERATOR_PRIVATE_ENV,
+                entry,
+            )
+            continue
+        allowed.add((parts.scheme, host.lower().rstrip("."), port))
+    return frozenset(allowed)
+
+
+def operator_private_destinations() -> frozenset[tuple[str, str, int]]:
+    """The private origins the operator has allowed, read at call time.
+
+    Read from the environment on every call and not at import, so that a test
+    or an operator's restart sees exactly what is set now. Empty unless set,
+    which is the default: with nothing listed this module behaves as it always
+    has.
+    """
+    return _parse_private_allowlist(os.getenv(OPERATOR_PRIVATE_ENV, ""))
+
+
+def _origin_of(url: str) -> tuple[str, str, int] | None:
+    try:
+        parts = urlsplit(url)
+        port = parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+    except ValueError:
+        return None
+    if not parts.hostname or port is None:
+        return None
+    return parts.scheme, parts.hostname.lower().rstrip("."), port
+
+
+def is_operator_private_destination(url: str) -> bool:
+    """Whether ``url`` is, to the scheme, host and port, one the operator listed.
+
+    Exact on purpose. A listed origin is permission to reach one named service,
+    never a class of addresses, so a sibling port, a sibling host or a different
+    scheme on the same machine is not covered. Userinfo is refused outright:
+    nothing about reaching an internal service calls for a credential in its URL.
+    """
+    allowed = operator_private_destinations()
+    if not allowed:
+        return False
+    try:
+        parts = urlsplit(url)
+        if parts.username or parts.password:
+            return False
+    except ValueError:
+        return False
+    return _origin_of(url) in allowed
+
+
+def _operator_private_ip_ok(ip_text: str, allowed_host: str) -> bool:
+    """Whether a listed host may resolve to this address.
+
+    The listing vouches for a name, not for whatever that name later points at.
+    A service on the stack's own network resolves to a private address, so that
+    is what is accepted. Link-local space is refused outright because it is where
+    cloud metadata lives, and loopback only when the operator listed a loopback
+    host, since a service name that suddenly resolves to 127.0.0.1 is a
+    rebinding, not a configuration.
+    """
+    ip = ipaddress.ip_address(ip_text)
+    if ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        return False
+    if ip.is_loopback:
+        host = allowed_host.strip("[]")
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+    return ip.is_private
+
+
 async def pin_public_url(
     url: str,
     *,
     allow_non_global: bool = False,
     require_https: bool = True,
+    allow_operator_private: bool = False,
 ) -> PinnedTarget:
     """Validate ``url`` and return it pinned to one validated resolved IP.
 
     Callers send the request with ``PinnedTarget.pinned_kwargs()``, which
     carries the pinned URL, the restored Host authority and the SNI extension.
+
+    ``allow_operator_private`` is for the callers that dial a server the
+    operator deployed beside this one and named in ``EGRESS_PRIVATE_ALLOWLIST``.
+    It lifts both the https and the global-address requirements for that exact
+    origin and for nothing else, and the resolved address is still checked, so
+    it is a narrower thing than ``allow_non_global``. A caller that handles a
+    URL a third party supplied must never pass it.
     """
+    exempt = allow_operator_private and is_operator_private_destination(url)
     try:
         parts = urlsplit(url)
     except ValueError as e:
@@ -192,7 +322,7 @@ async def pin_public_url(
         # input, not a fault. ``http://[bad`` raises here rather than
         # returning something to reject.
         raise EgressBlockedError(f"egress url is not parseable: {e}") from e
-    if require_https and parts.scheme != "https":
+    if require_https and parts.scheme != "https" and not exempt:
         raise EgressBlockedError("egress requires https")
     if parts.scheme not in ("https", "http"):
         raise EgressBlockedError(f"egress scheme {parts.scheme!r} is not allowed")
@@ -209,7 +339,16 @@ async def pin_public_url(
         # ``parts.port`` parses lazily, so a port that is out of range or not
         # a number survives urlsplit and raises on this read instead.
         raise EgressBlockedError(f"egress url has an unusable port: {e}") from e
-    ips = await resolve_public_ips(host, port=port, allow_non_global=allow_non_global)
+    ips = await resolve_public_ips(
+        host, port=port, allow_non_global=allow_non_global or exempt
+    )
+    if exempt:
+        bad = [i for i in ips if not _operator_private_ip_ok(i, host.lower())]
+        if bad:
+            raise EgressBlockedError(
+                f"egress to {host!r} is blocked: it resolves to an address the "
+                "private allowance does not cover"
+            )
     ip = ips[0]
 
     ip_netloc = f"[{ip}]" if ":" in ip else ip

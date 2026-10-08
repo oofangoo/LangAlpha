@@ -536,7 +536,11 @@ async def open_upstream(
     is refused rather than followed or relayed on."""
     destination = prepared.grant["destination_url"]
     try:
-        target = await pin_public_url(destination, require_https=True)
+        # The destination was fixed when the grant was issued, so it is the one
+        # caller here that may be an origin the operator allowed as private.
+        target = await pin_public_url(
+            destination, require_https=True, allow_operator_private=True
+        )
     except EgressBlockedError as e:
         # The destination was validated at grant creation; a failure here is
         # DNS trouble or a rebinding attempt — refuse, never resolve privately.
