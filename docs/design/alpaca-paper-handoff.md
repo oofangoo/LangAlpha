@@ -18,11 +18,41 @@ do next. Branch: `alpaca-paper` on `oofangoo/langalpha` (a fork of `ginlix-ai/la
 | End to end against the Docker stack and a real Alpaca paper account | **never run** |
 
 With the allowance unset, which is the default, nothing changes anywhere: the connector is not listed and cannot be
-enabled. To try it on a single-user install: put your Alpaca **paper** keys in `.env`
-(`ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`), set `EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765` and
-`COMPOSE_PROFILES=infra,alpaca`, `make up`, then enable the connector with
-`PATCH /api/v1/mcp/brokerages/alpaca/enabled {"enabled": true}`. **That path has never been run.** There is no UI for it
-yet, so the Alpaca tile may not behave in the web app.
+enabled.
+
+### Single-user setup (what to do on your own machine)
+
+Nothing below has been run end to end. It is the path the code was written for.
+
+1. **Alpaca paper keys.** Use a paper account that is not the one `trading-agents-poc` trades. Paper key ids start with
+   `PK`; a live key is refused by Alpaca on the paper host.
+2. **Get the branch.** `git fetch origin && git checkout alpaca-paper`. If you pulled this branch before its history was
+   rewritten, `git reset --hard origin/alpaca-paper`.
+3. **Run `make config` first** (model, data, sandbox, search). It rewrites `COMPOSE_PROFILES` in `.env`
+   (`scripts/configure.sh`), so anything you set for Alpaca before it is lost. Choose a model you can actually use: the
+   agent needs one.
+4. **Then add to `.env`:**
+   ```bash
+   COMPOSE_PROFILES=infra,alpaca            # keep "infra" if the wizard set it; add "alpaca"
+   EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765
+   ALPACA_API_KEY_ID=PK...
+   ALPACA_API_SECRET_KEY=...
+   EGRESS_RELAY_SECRET=<openssl rand -hex 32>
+   ```
+   `EGRESS_RELAY_SECRET` is required and the wizard does not set it. Without it the relay is disabled and the agent
+   gets no direct tools at all, Alpaca's included.
+5. **`make up`**, then open http://localhost:5173.
+6. **Enable the connector** (no UI yet; the self-host API takes no sign-in):
+   `curl -X PATCH localhost:8000/api/v1/mcp/brokerages/alpaca/enabled -H 'content-type: application/json' -d '{"enabled": true}'`.
+   `GET localhost:8000/api/v1/mcp/brokerages` should list `alpaca` once the allowlist is set. If it does not, the
+   allowlist did not reach the backend.
+7. **Make paper orders ask first.** By default **paper orders do not ask for approval** (`order_approval_map`: "paper
+   asks only when its own switch does"), so the agent can place them unprompted. To require an approval card:
+   `curl -X PATCH localhost:8000/api/v1/mcp/servers/alpaca/binding -H 'content-type: application/json' -d '{"order_approval": {"paper": true}}'`.
+8. In a workspace, ask the agent to read the account, then to place a small order.
+
+Self-host has one local user and no sign-in, so anyone who can reach port 8000 acts as you. With the Alpaca keys in
+`.env` that includes trading that paper account. Keep the stack on your machine or a private network.
 
 ## The platform gaps (1 and 3 are done; 2 became optional)
 
