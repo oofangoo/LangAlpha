@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from alpaca_mcp.client import AlpacaClient
+from alpaca_mcp.client import AlpacaClient, Credentials
 from alpaca_mcp.server import build_app, build_server
 from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
@@ -61,11 +61,12 @@ async def connect(upstream: Upstream):
     @contextlib.asynccontextmanager
     async def open_client(
         headers: dict[str, str] | None = None,
+        default_credentials: Credentials | None = None,
     ) -> AsyncIterator[Client]:
         sent = {"APCA-API-KEY-ID": KEY, "APCA-API-SECRET-KEY": SECRET}
         if headers is not None:
             sent = headers
-        app = build_app(build_server(alpaca), [HOST])
+        app = build_app(build_server(alpaca, default_credentials), [HOST])
         async with app.router.lifespan_context(app):
             http = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),

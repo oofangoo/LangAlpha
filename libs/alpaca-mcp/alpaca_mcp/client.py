@@ -11,6 +11,8 @@ its own, so reaching it gives nothing that the caller's own keys did not.
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -21,6 +23,10 @@ DATA_URL = "https://data.alpaca.markets"
 
 KEY_ID_HEADER = "apca-api-key-id"
 SECRET_HEADER = "apca-api-secret-key"
+
+# Optional operator-supplied keys, used only for a request that carries none.
+ENV_KEY_ID = "ALPACA_API_KEY_ID"
+ENV_SECRET = "ALPACA_API_SECRET_KEY"
 
 Base = Literal["trading", "data"]
 
@@ -72,16 +78,34 @@ class Credentials:
     secret: str = field(repr=False)
 
     @classmethod
-    def from_headers(cls, headers: Any) -> Credentials:
-        """The key pair a request carried, or a refusal that names what is missing."""
-        key_id = (headers.get(KEY_ID_HEADER) if headers else None) or ""
-        secret = (headers.get(SECRET_HEADER) if headers else None) or ""
-        if not key_id.strip() or not secret.strip():
-            raise MissingCredentials(
-                "no Alpaca paper credentials were sent: the connection must carry "
-                "APCA-API-KEY-ID and APCA-API-SECRET-KEY"
-            )
-        return cls(key_id=key_id.strip(), secret=secret.strip())
+    def from_headers(
+        cls, headers: Any, default: Credentials | None = None
+    ) -> Credentials:
+        """The key pair a request carried, else the operator's, else a refusal.
+
+        The pair is taken whole from one source. A request that names a key id
+        but no secret is not completed from the environment: that would send one
+        account's id with another's secret, or quietly spend the operator's
+        account on a call that meant to use somebody else's.
+        """
+        key_id = ((headers.get(KEY_ID_HEADER) if headers else None) or "").strip()
+        secret = ((headers.get(SECRET_HEADER) if headers else None) or "").strip()
+        if key_id and secret:
+            return cls(key_id=key_id, secret=secret)
+        if not key_id and not secret and default is not None:
+            return default
+        raise MissingCredentials(
+            "no Alpaca paper credentials were sent: the connection must carry "
+            "APCA-API-KEY-ID and APCA-API-SECRET-KEY"
+        )
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> Credentials | None:
+        """The operator's key pair, or None unless both halves are set."""
+        env = os.environ if environ is None else environ
+        key_id = (env.get(ENV_KEY_ID) or "").strip()
+        secret = (env.get(ENV_SECRET) or "").strip()
+        return cls(key_id=key_id, secret=secret) if key_id and secret else None
 
 
 class AlpacaClient:

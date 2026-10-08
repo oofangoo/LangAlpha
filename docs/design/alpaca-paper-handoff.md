@@ -10,22 +10,28 @@ do next. Branch: `alpaca-paper` on `oofangoo/langalpha` (a fork of `ginlix-ai/la
 | Sidecar `libs/alpaca-mcp` (tools, validation, Dockerfile, compose profile) | built, 41 tests |
 | Private-origin allowance `EGRESS_PRIVATE_ALLOWLIST` (relay, probe, URL validator) | built, 30 tests |
 | `AlpacaOrderAdapter`, capability map, registry entry, migration `063` | built, 73 + 8 tests, migration run on real Postgres |
-| Header-credential **consent** for an operator-hosted brokerage | **not built** (blocker 1) |
-| Credentials entry (keys into the vault, headers on the row) | **not built** (blocker 2) |
-| Order **reconciliation** for a header-credential connection | **not built** (blocker 3) |
+| Header-credential **consent** for an operator-hosted brokerage (`header_consent`) | built; checked on real grant rows (0 Alpaca tools denied, a moomoo-host header row still 101) |
+| Order **reconciliation** for a header-credential connection (`active_header_grant`) | built, 4 tests; the new SQL run on a real Postgres |
+| Keys from `.env` (`ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY`, sidecar fallback) | built, tested |
+| Per-user keys in the vault via a credentials endpoint and UI | **not built**; only needed for a multi-user install (blocker 2, now optional) |
 | Frontend (tile, credentials dialog, strings, icon) | **not built** |
 | End to end against the Docker stack and a real Alpaca paper account | **never run** |
 
 With the allowance unset, which is the default, nothing changes anywhere: the connector is not listed and cannot be
-enabled. To exercise what exists, set `EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765` and add `alpaca` to
-`COMPOSE_PROFILES`. After that it still cannot work end to end, for the three blockers below.
+enabled. To try it on a single-user install: put your Alpaca **paper** keys in `.env`
+(`ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`), set `EGRESS_PRIVATE_ALLOWLIST=http://alpaca-mcp:8765` and
+`COMPOSE_PROFILES=infra,alpaca`, `make up`, then enable the connector with
+`PATCH /api/v1/mcp/brokerages/alpaca/enabled {"enabled": true}`. **That path has never been run.** There is no UI for it
+yet, so the Alpaca tile may not behave in the web app.
 
-## The three blockers (all platform, all in this repo)
+## The platform gaps (1 and 3 are done; 2 became optional)
 
 Every shipped broker is an OAuth connection, and a lot is keyed on that. A header-credential connector (Alpaca has no
 OAuth) falls through three gaps. In this order:
 
-### 1. Consent
+### 1. Consent (done)
+
+Kept for the record; the fix is `header_consent` in `brokerage_capabilities.py`, used at each site below.
 
 A row authenticated by headers has no consent record, and every reader treats that as consent to **nothing**, which
 denies a curated vendor's entire curation. So today every Alpaca tool would be refused.
@@ -44,7 +50,10 @@ Keep the existing tests that assert a header row at a shipped OAuth vendor conse
 operator-hosted vendor's header row gets its groups. This is safe to grant fixed: the connector is paper-only by
 construction and orders still go through the approval gate (`order_approval` switches on the row).
 
-### 2. Credentials
+### 2. Credentials (optional now)
+
+Keys can come from `.env` through the sidecar, which is enough for a single-user install. This section is for a shared
+install, where one account for everyone is wrong and each user needs their own keys. Not built.
 
 Shipped brokerage rows are not editable (`app/mcp_servers.py` ~L223 and ~L464), and `_create_brokerage_row` in
 `app/mcp_brokerages.py` builds the row with no headers. There is nowhere for a user to put keys.
@@ -63,7 +72,9 @@ Fix:
   (`egress_grants._upsert_header_grants`). Confirm that the probe verdict (`mcp_config._binding_plan`, `probe_ok`)
   turns green for the allowlisted URL, since it gates whether the direct tools bind.
 
-### 3. Reconciliation
+### 3. Reconciliation (done)
+
+Kept for the record; the fix is `OrderReconciler._reach` plus `active_header_grant`.
 
 `orders/reconcile.py::_reconcile_group` calls `get_connection(user_id, server)` and
 `database/order_reconciliation.py::active_grant_for_connection(user_id, connection_id)`. A header grant has no
@@ -177,22 +188,24 @@ They state the goal, what is built and verified, what is not, and why. Do not re
 approach and the narrow EGRESS_PRIVATE_ALLOWLIST are settled. Do not widen that allowance (no paths, wildcards, CIDRs,
 no use from OAuth hops). The connector is paper-only and must stay unable to reach a live Alpaca account.
 
-The backend half is built. The connector cannot yet work end to end because of three platform gaps, listed with file
-pointers in the handoff under "The three blockers". Do them in that order:
-  1. fixed consent for an operator-hosted brokerage's header-credential row (a single `header_consent` helper, default
-     empty so no other vendor changes);
-  2. credentials entry (row created with vault-ref headers; PUT/DELETE /api/v1/mcp/brokerages/{name}/credentials that
-     verifies the key pair against the paper account, writes the vault secrets, never logs or returns the secret);
-  3. order reconciliation for a header grant (find the grant by user + server name + kind, derive the vendor from the
-     grant's destination_url, never from the server name).
-Then the frontend, then a real run (see "Then run it for real"). If this session has no Docker daemon, finish 1-3 with
-unit tests and say plainly that the end-to-end run is still owed.
+The backend is built and unit-tested: the sidecar (keys can come from .env), the adapter, fixed consent for the
+operator-hosted connector, and reconciliation through a header grant. What has NEVER been done is run it. So:
+  1. Bring up the stack (see "Then run it for real" in the handoff) with my Alpaca PAPER keys in .env, enable the
+     connector, and walk the real flow: discovery lists the tools, an order from chat shows the approval card, the
+     ledger row appears, a market order fills and reconciliation moves it, a limit order places and cancels, and an
+     unanswered placement lands as `unknown` and reconciles. Fix what breaks. This is the main job and it will find
+     things the unit tests could not.
+  2. Check each item under "Alpaca facts that came from documentation or memory" against the real account and fix
+     libs/alpaca-mcp or the adapter where they differ. The listing-paging cursor is the one most likely to matter.
+  3. Then the frontend: the Alpaca tile, a state for a connector with no OAuth, strings (en-US, zh-CN) and the icon.
+  4. Only if I say it is a shared install: per-user keys via a credentials endpoint (handoff section 2).
+If this session has no Docker daemon, say so plainly: you can do the frontend and read-only review, but step 1 is still
+owed and must not be reported as done.
 
-Rules: follow AGENTS.md (verify with real calls first, pin with tests last; docstrings explain why). Use a separate
-Alpaca paper account from the one the trading-agents-poc project trades. Run the unit suite and the sidecar tests before
+Rules: follow AGENTS.md (verify with real calls first, pin with tests last; docstrings explain why). Use an Alpaca
+paper account that is not the one the trading-agents-poc project trades. Run the unit suite and the sidecar tests before
 every push, and report any failure with its output; the root-uid livefs test failure is known and unrelated. Commit in
-small logical commits and push to `alpaca-paper` only. When you finish a blocker, update the State table in the handoff.
+small logical commits and push to `alpaca-paper` only. Update the State table in the handoff as things become true.
 
-Tell me at the end: what you built, what you ran, what you could not verify, and which of the handoff's "Alpaca facts"
-you checked against a real account.
+Tell me at the end: what you ran, what broke, what you fixed, and what you could not verify.
 ```

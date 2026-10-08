@@ -1,8 +1,8 @@
 # Alpaca paper-trading connector
 
-Status: **backend half built and unit-tested; the connect flow, consent and reconciliation for a header-credential
-connector are not**. The connector is therefore hidden unless the operator opts in, and cannot yet be used end to
-end. `alpaca-paper-handoff.md` lists what is left, in order.
+Status: **backend built and unit-tested, including fixed consent and reconciliation for a header-credential
+connector, and keys read from `.env`. Never run against the Docker stack or a real Alpaca account, and no frontend.**
+It is hidden unless the operator opts in. `alpaca-paper-handoff.md` lists what is left, in order.
 
 ## Goal
 
@@ -35,7 +35,8 @@ A small server of our own, not the official one wrapped in HTTP: the official to
 renamed between major versions, our order-tool table is keyed by exact tool name, and v2.3.x has open order bugs.
 
 - Stateless streamable HTTP. **The paper host is a constant**; no setting selects another.
-- Holds no credentials. Each call carries `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY`, forwarded and never stored.
+- Each call may carry `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY`, forwarded and never stored or logged; if it carries
+  neither, the operator's `.env` pair is used if set. A half pair is refused, never completed from the environment.
 - Every order gets a `client_order_id`. Arguments are validated before Alpaca sees them.
 - Tool names follow the official server. Reads carry `readOnlyHint`. Bulk cancel, close-all, account-config writes,
   watchlist writes, options exercise and locates are deliberately absent.
@@ -57,9 +58,10 @@ deliberate hole, kept as narrow as possible:
   discovery, keeps the old rules because its URLs are supplied by a remote party.
 - The resolved address is still checked: link-local (cloud metadata), multicast, unspecified and reserved are refused;
   loopback only if the operator listed a loopback host; otherwise it must be private.
-- A user can create a row pointing at the allowlisted origin. That is acceptable only because the sidecar is stateless
-  and secret-free: reaching it yields nothing the caller's own keys did not, and the paper host is hardcoded.
-  **Only list services with those properties.**
+- A user can create a row pointing at the allowlisted origin. With no environment keys the sidecar holds no secret and
+  reaching it yields nothing the caller's own keys did not; with them set, a caller can trade the operator's paper
+  account. Either way the paper host is hardcoded. **List only services that are safe for every user of the stack to
+  reach.**
 
 ### 3. The adapter, capability map and registry entry
 
@@ -78,10 +80,11 @@ deliberate hole, kept as narrow as possible:
 An unanswered placement is `unknown`, never `failed`: a failed attempt reads as leave to place the order again, and
 the order may exist. Reconciliation then finds it by what was ordered, as it does at IBKR.
 
-## What was found while building it (and is not solved)
+## What was found while building it
 
-**A header-credential connector has no consent, no reconciliation and no connect flow.** The shipped brokers are all
-OAuth connections, and a lot is keyed on that:
+**A header-credential connector had no consent, no reconciliation and no connect flow.** The shipped brokers are all
+OAuth connections, and a lot was keyed on that. Consent and reconciliation are now fixed (below); the connect flow is
+covered for a single-user install by keys in `.env`, and a per-user flow remains unbuilt:
 
 - Capability consent is stored on the OAuth connection. A row authenticated by headers is treated as consenting to
   **nothing**, which denies a curated vendor's whole curation (`egress_grants._header_policies`,
@@ -91,7 +94,13 @@ OAuth connections, and a lot is keyed on that:
   grant has neither, so attempts would stay open.
 - Shipped brokerage rows are not editable (`app/mcp_servers.py`), so there is nowhere for a user to put keys.
 
-Until those three exist the Alpaca connector cannot work end to end, which is why it is hidden by default.
+Fixes: `header_consent()` grants an `operator_hosted` brokerage every group it offers and leaves every other vendor at
+nothing (checked on real grant rows: Alpaca 0 tools denied, a moomoo-host header row still 101);
+`OrderReconciler._reach` falls back to a header grant when no un-revoked OAuth connection claims the server, taking the
+vendor from the grant's `destination_url`; and the sidecar reads `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` for a
+request that carries none. The last means the sidecar can now hold the operator's paper key, so anyone who can reach the
+stack trades that one account: right for a single-user install, wrong for a shared one, where per-user vault keys are
+the remaining work.
 
 ## Evaluation interplay (trading-agents-poc)
 
@@ -100,13 +109,15 @@ SPY comparison, drawdown halt and signal scorecard. Alpaca paper accounts have s
 
 ## Verification so far
 
-- Sidecar: 41 tests through a real MCP client and the real ASGI app with only Alpaca's network stubbed; also run as a
+- Sidecar: 45 tests through a real MCP client and the real ASGI app with only Alpaca's network stubbed; also run as a
   real process (`/healthz`, missing-credentials error).
 - Adapter: 73 unit tests, mutation-checked on two behaviours; 8 contract tests run the real sidecar into the adapter.
 - Egress allowance: 30 tests, mostly about what it refuses.
 - Migration `063`: applied on a real Postgres 16 through the full chain `001 -> 063` with seeded rows (including a name
   collision and a tombstone), then inspected.
-- Backend unit suite: 16,301 passed. One failure, `test_livefs_daemon::test_root_lays_the_links_as_the_folders_owner`,
+- Consent and reconciliation: 9 + 4 tests; the new grant lookup run on a real Postgres, and the real header-grant
+  builder run on seeded rows.
+- Backend unit suite: see the handoff for the latest count. One failure, `test_livefs_daemon::test_root_lays_the_links_as_the_folders_owner`,
   also fails on the untouched base because the container runs as root.
 
 **Not verified:** anything against a live Alpaca account, the Docker stack, the frontend, or the approval flow end to

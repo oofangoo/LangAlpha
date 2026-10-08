@@ -82,7 +82,9 @@ def _guard(
     return run
 
 
-def build_server(client: AlpacaClient) -> MCPServer:
+def build_server(
+    client: AlpacaClient, default_credentials: Credentials | None = None
+) -> MCPServer:
     server = MCPServer(
         name="alpaca-paper",
         instructions=(
@@ -94,7 +96,7 @@ def build_server(client: AlpacaClient) -> MCPServer:
     )
 
     def creds(ctx: Context) -> Credentials:
-        return Credentials.from_headers(ctx.headers)
+        return Credentials.from_headers(ctx.headers, default_credentials)
 
     async def trading(
         ctx: Context, method: str, path: str, **kwargs: Any
@@ -458,7 +460,14 @@ def main() -> None:
         if h.strip()
     ]
     client = AlpacaClient.create()
-    app = build_app(build_server(client), hosts)
+    defaults = Credentials.from_environment()
+    if defaults is not None:
+        logger.warning(
+            "using the Alpaca paper key pair from the environment for any request "
+            "that carries none: every caller who can reach this server can trade "
+            "that account"
+        )
+    app = build_app(build_server(client, defaults), hosts)
     try:
         uvicorn.run(
             app,

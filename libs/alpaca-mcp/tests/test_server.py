@@ -197,3 +197,50 @@ async def test_unlisted_host_is_refused_by_dns_rebinding_protection():
             headers={"accept": "application/json, text/event-stream"},
         )
     assert response.status_code in (400, 403, 421)
+
+
+async def test_operator_keys_are_used_only_when_the_request_carries_none(connect, upstream):
+    from alpaca_mcp.client import Credentials
+
+    upstream.handler = lambda r: httpx.Response(200, json={})
+    operator = Credentials(key_id="PKOPERATOR", secret="operator-secret")
+    async with connect(headers={}, default_credentials=operator) as client:
+        result = await client.call_tool("get_account_info", {})
+    assert not result.is_error
+    assert upstream.requests[0].headers["apca-api-key-id"] == "PKOPERATOR"
+    assert upstream.requests[0].headers["apca-api-secret-key"] == "operator-secret"
+
+
+async def test_a_requests_own_keys_beat_the_operators(connect, upstream):
+    from alpaca_mcp.client import Credentials
+
+    upstream.handler = lambda r: httpx.Response(200, json={})
+    operator = Credentials(key_id="PKOPERATOR", secret="operator-secret")
+    async with connect(default_credentials=operator) as client:
+        await client.call_tool("get_account_info", {})
+    assert upstream.requests[0].headers["apca-api-key-id"] == KEY
+
+
+async def test_a_half_a_pair_is_never_completed_from_the_operators(connect, upstream):
+    from alpaca_mcp.client import Credentials
+
+    operator = Credentials(key_id="PKOPERATOR", secret="operator-secret")
+    async with connect(
+        headers={"APCA-API-KEY-ID": "PKSOMEONE"}, default_credentials=operator
+    ) as client:
+        result = await client.call_tool("get_account_info", {})
+    assert result.is_error
+    assert upstream.requests == []
+
+
+def test_environment_keys_need_both_halves():
+    from alpaca_mcp.client import Credentials
+
+    assert Credentials.from_environment({}) is None
+    assert Credentials.from_environment({"ALPACA_API_KEY_ID": "PK1"}) is None
+    assert Credentials.from_environment({"ALPACA_API_SECRET_KEY": "s"}) is None
+    both = Credentials.from_environment(
+        {"ALPACA_API_KEY_ID": " PK1 ", "ALPACA_API_SECRET_KEY": " s "}
+    )
+    assert both == Credentials(key_id="PK1", secret="s")
+    assert "secret=" not in repr(both)  # the secret never shows in a log line

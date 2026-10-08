@@ -12,8 +12,11 @@ See `docs/design/alpaca-paper-connector.md` for the full reasoning.
 
 - **Paper only.** The trading host is the constant `https://paper-api.alpaca.markets`. There is no setting, header or
   argument that selects another. A live key sent to the paper host is refused by Alpaca.
-- **No secrets of its own.** Each request carries `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`; they are forwarded to
-  Alpaca and never stored or logged. Reaching the server gives nothing the caller's own keys did not.
+- **Keys are never stored or logged.** Each request may carry `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`, which win.
+  A request that carries neither falls back to `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` from the environment if
+  both are set; a request with only half a pair is refused, never completed from the environment. **With the
+  environment keys set, anyone who can reach the server trades that account**, which suits a single-user install and
+  not a shared one. With them unset the server holds no secret at all.
 - **Every order has a `client_order_id`** (`lamcp-…` unless the caller supplies one), so an order whose answer is
   lost can be looked up with `get_order_by_client_id`.
 - **Arguments are checked before Alpaca sees them** (`alpaca_mcp/validation.py`): exactly one of `qty`/`notional`,
@@ -58,6 +61,7 @@ cd libs/alpaca-mcp && uv run alpaca-mcp          # 127.0.0.1:8765
 | `ALPACA_MCP_PORT` | `8765` | |
 | `ALPACA_MCP_ALLOWED_HOSTS` | `127.0.0.1:*,localhost:*` | `Host` values accepted (DNS-rebinding protection); compose sets `alpaca-mcp:8765` |
 | `ALPACA_MCP_LOG_LEVEL` | `INFO` | |
+| `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` | unset | optional paper key pair used when a request carries none |
 
 `GET /healthz` answers `ok`. The MCP endpoint is `/mcp`.
 

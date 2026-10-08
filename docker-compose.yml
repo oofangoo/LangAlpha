@@ -103,6 +103,11 @@ services:
     restart: unless-stopped
     environment:
       ALPACA_MCP_ALLOWED_HOSTS: "alpaca-mcp:8765"
+      # Optional. Used only for a request that carries no key pair of its own, so
+      # a single-user install can keep the paper keys in .env. Empty means every
+      # caller must bring its own.
+      ALPACA_API_KEY_ID: ${ALPACA_API_KEY_ID:-}
+      ALPACA_API_SECRET_KEY: ${ALPACA_API_SECRET_KEY:-}
     expose:
       - "8765"
 
